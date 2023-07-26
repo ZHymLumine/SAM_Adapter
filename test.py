@@ -66,27 +66,26 @@ def eval_psnr(loader, model, data_norm=None, eval_type=None, eval_bsize=None,
 
     pbar = tqdm(loader, leave=False, desc='val')
 
-    for batch in pbar:
-        for k, v in batch.items():
-            batch[k] = v.cuda()
+    with torch.no_grad():
+        for batch in pbar:
+            
+            inp = batch['inp'].to(device)
+            gt = batch['gt'].to(device)
 
-        inp = batch['inp']
-        gt = batch['gt']
-        model.set_input(inp, gt) 
+            model.set_input(inp, gt)    
+            pred = torch.sigmoid(model(inp, gt, num_points=1))
 
-        pred = torch.sigmoid(model.infer(inp))
+            result1, result2, result3, result4 = metric_fn(pred, gt)
+            val_metric1.add(result1.item(), inp.shape[0])
+            val_metric2.add(result2.item(), inp.shape[0])
+            val_metric3.add(result3.item(), inp.shape[0])
+            val_metric4.add(result4.item(), inp.shape[0])
 
-        result1, result2, result3, result4 = metric_fn(pred, batch['gt'])
-        val_metric1.add(result1.item(), inp.shape[0])
-        val_metric2.add(result2.item(), inp.shape[0])
-        val_metric3.add(result3.item(), inp.shape[0])
-        val_metric4.add(result4.item(), inp.shape[0])
-
-        if verbose:
-            pbar.set_description('val {} {:.4f}'.format(metric1, val_metric1.item()))
-            pbar.set_description('val {} {:.4f}'.format(metric2, val_metric2.item()))
-            pbar.set_description('val {} {:.4f}'.format(metric3, val_metric3.item()))
-            pbar.set_description('val {} {:.4f}'.format(metric4, val_metric4.item()))
+            if verbose:
+                pbar.set_description('val {} {:.4f}'.format(metric1, val_metric1.item()))
+                pbar.set_description('val {} {:.4f}'.format(metric2, val_metric2.item()))
+                pbar.set_description('val {} {:.4f}'.format(metric3, val_metric3.item()))
+                pbar.set_description('val {} {:.4f}'.format(metric4, val_metric4.item()))
 
     return val_metric1.item(), val_metric2.item(), val_metric3.item(), val_metric4.item()
 
@@ -106,8 +105,8 @@ if __name__ == '__main__':
     loader = DataLoader(dataset, batch_size=spec['batch_size'], shuffle=False,
                         num_workers=8)
 
-    model = models.make(config['model']).cuda()
-    sam_checkpoint = torch.load(args.model, map_location='cuda:0')
+    model = models.make(config['model']).to(device)
+    sam_checkpoint = torch.load(args.model, map_location=device)
     model.load_state_dict(sam_checkpoint, strict=False)
     
     metric1, metric2, metric3, metric4 = eval_psnr(loader, model,

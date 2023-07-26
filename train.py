@@ -12,10 +12,39 @@ import models
 import utils
 from statistics import mean
 import torch
+import torch.nn as nn
 import torch.distributed as dist
+
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+
+class BBCEWithLogitLoss(nn.Module):
+    '''
+    Balanced BCEWithLogitLoss
+    '''
+    def __init__(self):
+        super(BBCEWithLogitLoss, self).__init__()
+
+    def forward(self, pred, gt):
+        eps = 1e-10
+        count_pos = torch.sum(gt) + eps
+        count_neg = torch.sum(1. - gt)
+        ratio = count_neg / count_pos
+        w_neg = count_pos / (count_pos + count_neg)
+
+        bce1 = nn.BCEWithLogitsLoss(pos_weight=ratio)
+        loss = w_neg * bce1(pred, gt)
+
+        return loss
+
+def _iou_loss(pred, target):
+    pred = torch.sigmoid(pred)
+    inter = (pred * target).sum(dim=(2, 3))
+    union = (pred + target).sum(dim=(2, 3)) - inter
+    iou = 1 - (inter / union)
+
+    return iou.mean()
 
 
 def make_data_loader(spec, tag=''):
@@ -44,6 +73,7 @@ def make_data_loaders():
 def eval_psnr(loader, model, eval_type=None):
     model.eval()
 
+    
     if eval_type == 'f1':
         metric_fn = utils.calc_f1
         metric1, metric2, metric3, metric4 = 'f1', 'auc', 'none', 'none'
@@ -62,24 +92,25 @@ def eval_psnr(loader, model, eval_type=None):
 
     pred_list = []
     gt_list = []
-    for batch in loader:
-        for k, v in batch.items():
-            batch[k] = v.to(device)
+    
+    with torch.no_grad():
+        torch.cuda.empty_cache()
+        for batch in loader:
+            # for k, v in batch.items():
+            #     batch[k] = v.to(device)
 
-        inp = batch['inp']
+            inp = batch['inp'].to(device)
+            gt = batch['gt'].to(device)
 
-        pred = torch.sigmoid(model.infer(inp))
+            pred = torch.sigmoid(model(inp, gt, num_points=1))
+    
+            pred_list.append(pred)
+            gt_list.append(gt)
+            if pbar is not None:
+                pbar.update(1)
 
-        batch_pred = pred 
-        batch_gt = batch['gt']
-        
-        pred_list.append(batch_pred)
-        gt_list.append(batch_gt)
         if pbar is not None:
-            pbar.update(1)
-
-    if pbar is not None:
-        pbar.close()
+            pbar.close()
 
     pred_list = torch.cat(pred_list, 1)
     gt_list = torch.cat(gt_list, 1)
@@ -105,20 +136,34 @@ def prepare_training():
     return model, optimizer, epoch_start, lr_scheduler
 
 
-def train(train_loader, model):
+def train(train_loader, model, loss_mode):
     model.train()
     pbar = tqdm(total=len(train_loader), leave=False, desc='train')
 
-
     loss_list = []
     for batch in train_loader:
-        for k, v in batch.items():
-            batch[k] = v.to(device)
-        inp = batch['inp']
-        gt = batch['gt']
-        model.set_input(inp, gt)
-        model.optimize_parameters()
-        batch_loss = model.loss_G
+        # for k, v in batch.items():
+        #     batch[k] = v.to(device)
+        inp = batch['inp'].to(device)
+        gt = batch['gt'].to(device)
+
+        # model.set_input(inp, gt)
+        # model.optimize_parameters()
+        model.optimizer.zero_grad()
+        pred = model(inp, gt, num_points=20)
+        if  loss_mode == 'bce':
+            criterionBCE = torch.nn.BCEWithLogitsLoss()
+        elif loss_mode == 'bbce':
+            criterionBCE = BBCEWithLogitLoss()
+        elif loss_mode == 'iou':
+            criterionBCE = torch.nn.BCEWithLogitsLoss()
+
+        batch_loss = criterionBCE(pred, gt)
+        if loss_mode == 'iou':
+            batch_loss += _iou_loss(pred, gt)
+
+        batch_loss.backward()
+        model.optimizer.step()
         loss_list.append(batch_loss)
         #print('loss: ', batch_loss.item())
         if pbar is not None:
@@ -134,7 +179,7 @@ def train(train_loader, model):
 def main(config_, save_path, args):
     global config, log, writer, log_info
     config = config_
-    log, writer = utils.set_save_path(save_path, remove=False)
+    log = utils.set_save_path(save_path, remove=False)
     with open(os.path.join(save_path, 'config.yaml'), 'w') as f:
         yaml.dump(config, f, sort_keys=False)
 
@@ -154,10 +199,6 @@ def main(config_, save_path, args):
     sam_checkpoint = torch.load(config['sam_checkpoint'])
     model.load_state_dict(sam_checkpoint, strict=False)
     
-    for name, para in model.named_parameters():
-        if "image_encoder" in name and "prompt_generator" not in name:
-            para.requires_grad_(False)
-    
     model_total_params = sum(p.numel() for p in model.parameters())
     model_grad_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('model_grad_params:' + str(model_grad_params), '\nmodel_total_params:' + str(model_total_params))
@@ -170,7 +211,9 @@ def main(config_, save_path, args):
     for epoch in range(epoch_start, epoch_max + 1):
         print(f"{epoch} : ")
         t_epoch_start = timer.t()
-        train_loss_G = train(train_loader, model)
+        loss_mode = config['model']['args']['loss']
+        print("loss mode: ", loss_mode)
+        train_loss_G = train(train_loader, model, loss_mode)
         lr_scheduler.step()
 
        
@@ -179,10 +222,10 @@ def main(config_, save_path, args):
             csv_writer.writerow([epoch, train_loss_G])
             f.close()
             
-        # log_info = ['epoch {}/{}'.format(epoch, epoch_max)]
-        # writer.add_scalar('lr', optimizer.param_groups[0]['lr'], epoch)
-        # log_info.append('train G: loss={:.4f}'.format(train_loss_G))
-        # writer.add_scalars('loss', {'train G': train_loss_G}, epoch)
+        log_info = ['epoch {}/{}'.format(epoch, epoch_max)]
+    
+        log_info.append('train G: loss={:.4f}'.format(train_loss_G))
+
 
         model_spec = config['model']
         model_spec['sd'] = model.state_dict()
@@ -201,14 +244,10 @@ def main(config_, save_path, args):
               result1, result2, result3, result4, metric1, metric2, metric3, metric4 = eval_psnr(val_loader, model,
                   eval_type=config.get('eval_type'))
 
-              log_info.append('val: {}={:.4f}'.format(metric1, result1))
-              writer.add_scalars(metric1, {'val': result1}, epoch)
-              log_info.append('val: {}={:.4f}'.format(metric2, result2))
-              writer.add_scalars(metric2, {'val': result2}, epoch)
+              log_info.append('val: {}={:.4f}'.format(metric1, result1))              
+              log_info.append('val: {}={:.4f}'.format(metric2, result2))             
               log_info.append('val: {}={:.4f}'.format(metric3, result3))
-              writer.add_scalars(metric3, {'val': result3}, epoch)
               log_info.append('val: {}={:.4f}'.format(metric4, result4))
-              writer.add_scalars(metric4, {'val': result4}, epoch)
 
               if config['eval_type'] != 'ber':
                   if result1 > max_val_v:
@@ -226,7 +265,6 @@ def main(config_, save_path, args):
               log_info.append('{} {}/{}'.format(t_epoch, t_elapsed, t_all))
 
               log(', '.join(log_info))
-              writer.flush()
 
 
 def save(config, model, save_path, name):

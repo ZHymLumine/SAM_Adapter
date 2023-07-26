@@ -115,7 +115,7 @@ class SAM(nn.Module):
             global_attn_indexes=encoder_mode['global_attn_indexes'],
         )
         self.prompt_embed_dim = encoder_mode['prompt_embed_dim']
-        #self.batch_size = self.gt_mask.size()[0]
+        #self.batch_size = gt_mask.size()[0]
         # self.mask_decoder = MaskDecoder(
         #     num_multimask_outputs=3,
         #     transformer=TwoWayTransformer(
@@ -179,8 +179,8 @@ class SAM(nn.Module):
         self.no_mask_embed = nn.Embedding(1, encoder_mode['prompt_embed_dim'])
 
     def set_input(self, input, gt_mask):
-        self.input = input.to(self.device)
-        self.gt_mask = gt_mask.to(self.device)
+        x = input.to(self.device)
+        gt_mask = gt_mask.to(self.device)
 
     def get_dense_pe(self) -> torch.Tensor:
         """
@@ -194,33 +194,33 @@ class SAM(nn.Module):
         return self.pe_layer(self.image_embedding_size).unsqueeze(0)
 
 
-    def forward(self):
+    def forward(self, x, gt_mask, num_points):
         bs = 1
 
-        # print("img: ", self.input.size())   # [1, 3, 1024, 1024]
-        # print('gts: ', self.gt_mask.size()) # [1, 1, 1024, 1024]
+        # print("img: ", x.size())   # [1, 3, 1024, 1024]
+        # print('gts: ', gt_mask.size()) # [1, 1, 1024, 1024]
         # # Embed prompts
-        sparse_embeddings = torch.empty((bs, 0, self.prompt_embed_dim), device=self.input.device)
+        sparse_embeddings = torch.empty((bs, 0, self.prompt_embed_dim), device=x.device)
         dense_embeddings = self.no_mask_embed.weight.reshape(1, -1, 1, 1).expand(
             bs, -1, self.image_embedding_size, self.image_embedding_size
         )
 
         # modification -------!!----------#
 
-        self.features, feature_list = self.image_encoder(self.input)
+        self.features, feature_list = self.image_encoder(x)
         feature_list.append(self.features)
         feature_list = feature_list[::-1]
 
-        # print('mask size', self.gt_mask.size())  # (B, 1, 1024, 1024)
-        # print('mask: \n', self.gt_mask)
-        # print(torch.where(self.gt_mask == 1))
-        l = len(torch.where(self.gt_mask == 1)[2])
-        batch_size = self.gt_mask.size()[0]
+        # print('mask size', gt_mask.size())  # (B, 1, 1024, 1024)
+        # print('mask: \n', gt_mask)
+        # print(torch.where(gt_mask == 1))
+        l = len(torch.where(gt_mask == 1)[2])
+        batch_size = gt_mask.size()[0]
         points_torch = None
         if l > 0:
-            sample = np.random.choice(np.arange(l), 20, replace=True)
-            x = torch.where(self.gt_mask == 1)[2][sample].unsqueeze(1)  # (20, 1)
-            y = torch.where(self.gt_mask == 1)[3][sample].unsqueeze(1)  # (20, 1)
+            sample = np.random.choice(np.arange(l), num_points, replace=True)
+            x = torch.where(gt_mask == 1)[2][sample].unsqueeze(1)  # (20, 1)
+            y = torch.where(gt_mask == 1)[3][sample].unsqueeze(1)  # (20, 1)
             points = torch.cat([x, y], dim=1).unsqueeze(1).float() # (20, 1, 2)
             points_torch = points.to(self.device)
             points_torch = points_torch.transpose(0,1).repeat(batch_size, 1, 1)    # (b, 20, 2)
@@ -234,7 +234,7 @@ class SAM(nn.Module):
                 )
             else:
                 new_feature.append(feature)
-        img_resize = F.interpolate(self.input[:, 0].unsqueeze(1).to(self.device), scale_factor=self.features.shape[2]/self.input.shape[2],
+        img_resize = F.interpolate(x[:, 0].unsqueeze(1).to(self.device), scale_factor=self.features.shape[2]/x.shape[2],
                                            mode='bilinear')
         
         new_feature.append(img_resize)
@@ -260,76 +260,9 @@ class SAM(nn.Module):
         #print('los mask size: ', low_res_masks.size()) # [1, 1, 256, 256]
         # Upscale the masks to the original image resolution
         masks = self.postprocess_masks(low_res_masks, self.inp_size, self.inp_size)
-        self.pred_mask = masks
-
-    def infer(self, input):
-        bs = 1
-
-        # Embed prompts
-        # sparse_embeddings = torch.empty((bs, 0, self.prompt_embed_dim), device=input.device)
-        # dense_embeddings = self.no_mask_embed.weight.reshape(1, -1, 1, 1).expand(
-        #     bs, -1, self.image_embedding_size, self.image_embedding_size
-        # )
-
-        # self.features = self.image_encoder(input)
-
-        # # Predict masks
-        # low_res_masks, iou_predictions = self.mask_decoder(
-        #     image_embeddings=self.features,
-        #     image_pe=self.get_dense_pe(),
-        #     sparse_prompt_embeddings=sparse_embeddings,
-        #     dense_prompt_embeddings=dense_embeddings,
-        #     multimask_output=False,
-        # )
-
-        # # Upscale the masks to the original image resolution
-        # masks = self.postprocess_masks(low_res_masks, self.inp_size, self.inp_size)
-
-        ##  modification ----!!!!!!!! ###
-
-        # image embeddings
-        self.features, feature_list = self.image_encoder(self.input)
-        feature_list.append(self.features)
-        feature_list = feature_list[::-1]
-
-        # embed prompts
-        points_torch = None
-        #prompt = F.interpolate(self.gt_mask[None, None, :, :], self.input.shape[2:], mode="nearest")[0]
-        prompt = self.gt_mask
-        #print("prompt ", prompt.size())
-        l = len(torch.where(prompt == 1)[0])
-        sample = np.random.choice(np.arange(l), 1, replace=True)
-        x = torch.where(self.gt_mask == 1)[2][sample].unsqueeze(1)  # (1, 1)
-        y = torch.where(self.gt_mask == 1)[3][sample].unsqueeze(1)  # (1, 1)
-        points = torch.cat([x, y], dim=1).unsqueeze(1).float() # (1, 1, 2)
-        points_torch = points.to(self.device)
-        batch_size = self.gt_mask.size()[0]
-        points_torch = points_torch.transpose(0,1).repeat(batch_size, 1, 1)
-        
-        #print("points ", points.size())
-        
-
-        new_feature = []
-        for i, (feature, prompt_encoder) in enumerate(zip(feature_list, self.prompt_encoder_list)):
-            if i == 3: # 第四层feature过prompt encoder
-                new_feature.append(
-                    prompt_encoder(feature, points_torch.clone())
-                )
-            else:
-                new_feature.append(feature)
-        img_resize = F.interpolate(self.input[:, 0].unsqueeze(1).to(self.device), scale_factor=self.features.shape[2]/self.input.shape[2],
-                                           mode='bilinear')
-        
-        new_feature.append(img_resize)
-        
-        
-        low_res_masks = self.mask_decoder(new_feature, 1, 256//64)
-        masks = self.postprocess_masks(low_res_masks, self.inp_size, self.inp_size)
-        #print("low res : ", low_res_masks.size())
-        #print('masks ', masks.size())
-        
         return masks
 
+   
     def postprocess_masks(
         self,
         masks: torch.Tensor,
@@ -361,19 +294,6 @@ class SAM(nn.Module):
         masks = F.interpolate(masks, original_size, mode="bilinear", align_corners=False)
         return masks
 
-    def backward_G(self):
-        """Calculate GAN and L1 loss for the generator"""
-        self.loss_G = self.criterionBCE(self.pred_mask, self.gt_mask)
-        if self.loss_mode == 'iou':
-            self.loss_G += _iou_loss(self.pred_mask, self.gt_mask)
-
-        self.loss_G.backward()
-
-    def optimize_parameters(self):
-        self.forward()
-        self.optimizer.zero_grad()  # set G's gradients to zero
-        self.backward_G()  # calculate graidents for G
-        self.optimizer.step()  # udpate G's weights
 
     def set_requires_grad(self, nets, requires_grad=False):
         """Set requies_grad=Fasle for all the networks to avoid unnecessary computations

@@ -5,7 +5,6 @@ import shutil
 import torch
 import numpy as np
 from torch.optim import SGD, Adam, AdamW
-from tensorboardX import SummaryWriter
 
 import sod_metric
 class Averager():
@@ -72,8 +71,7 @@ def ensure_path(path, remove=True):
 def set_save_path(save_path, remove=True):
     ensure_path(save_path, remove=remove)
     set_log_path(save_path)
-    writer = SummaryWriter(os.path.join(save_path, 'tensorboard'))
-    return log, writer
+    return log
 
 
 def compute_num_params(model, text=False):
@@ -213,7 +211,7 @@ def calc_ber(y_pred, y_true):
     y_pred, y_true = y_pred.permute(0, 2, 3, 1).squeeze(-1), y_true.permute(0, 2, 3, 1).squeeze(-1)
     with torch.no_grad():
         assert y_pred.shape == y_true.shape
-        pos_err, neg_err, ber, acc = 0, 0, 0, 0
+        pos_err, neg_err, ber = 0, 0, 0
         y_true = y_true.cpu().numpy()
         y_pred = y_pred.cpu().numpy()
         for i in range(batchsize):
@@ -224,9 +222,8 @@ def calc_ber(y_pred, y_true):
                                                                          true * 255, 125)
             pos_err += (1 - TP / (TP + FN)) * 100
             neg_err += (1 - TN / (TN + FP)) * 100
-            acc += ACC
 
-    return pos_err / batchsize, neg_err / batchsize, (pos_err + neg_err) / 2 / batchsize, acc / batchsize
+    return pos_err / batchsize, neg_err / batchsize, (pos_err + neg_err) / 2 / batchsize, np.array(0)
 
 def get_binary_classification_metrics(pred, gt, threshold=None):
     if threshold is not None:
