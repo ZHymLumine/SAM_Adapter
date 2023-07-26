@@ -10,7 +10,6 @@ numpy
 typing
 terminaltables
 Pillow
-tensorboardX
 onnxruntime
 setuptools
 timm
