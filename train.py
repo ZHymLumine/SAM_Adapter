@@ -96,9 +96,7 @@ def eval_psnr(loader, model, eval_type=None):
     with torch.no_grad():
         torch.cuda.empty_cache()
         for batch in loader:
-            # for k, v in batch.items():
-            #     batch[k] = v.to(device)
-
+    
             inp = batch['inp'].to(device)
             gt = batch['gt'].to(device)
 
@@ -192,6 +190,7 @@ def main(config_, save_path, args):
 
     model, optimizer, epoch_start, lr_scheduler = prepare_training()
     model.optimizer = optimizer
+    #model.batch_size = config['train_dataset']['batch_size']
     lr_scheduler = CosineAnnealingLR(model.optimizer, config['epoch_max'], eta_min=config.get('lr_min'))
 
     model = model.to(device)
@@ -212,7 +211,6 @@ def main(config_, save_path, args):
         print(f"{epoch} : ")
         t_epoch_start = timer.t()
         loss_mode = config['model']['args']['loss']
-        print("loss mode: ", loss_mode)
         train_loss_G = train(train_loader, model, loss_mode)
         lr_scheduler.step()
 

@@ -7,6 +7,7 @@ from typing import List, Tuple, Type
 import math
 from .common import MLPBlock
 
+batch_size = 1
 
 class LayerNorm2d(nn.Module):
     def __init__(self, num_channels: int, eps: float = 1e-6) -> None:
@@ -69,6 +70,7 @@ class TwoWayTransformerVisualSampler(nn.Module):
         mlp_dim: int,
         activation: Type[nn.Module] = nn.ReLU,
         attention_downsample_rate: int = 2,
+        batch_size: int = 1,
     ) -> None:
         super().__init__()
         self.depth = depth
@@ -76,7 +78,6 @@ class TwoWayTransformerVisualSampler(nn.Module):
         self.num_heads = num_heads
         self.mlp_dim = mlp_dim
         self.layers = nn.ModuleList()
-
         for i in range(depth):
             self.layers.append(
                 TwoWayAttentionBlock(
@@ -86,6 +87,7 @@ class TwoWayTransformerVisualSampler(nn.Module):
                     activation=activation,
                     attention_downsample_rate=attention_downsample_rate,
                     skip_first_layer_pe=(i == 0),
+                    batch_size=batch_size,
                 )
             )
 
@@ -121,6 +123,7 @@ class TwoWayAttentionBlock(nn.Module):
         activation: Type[nn.Module] = nn.ReLU,
         attention_downsample_rate: int = 2,
         skip_first_layer_pe: bool = False,
+        batch_size: int = 1,
     ) -> None:
         super().__init__()
         self.self_attn = Attention(embedding_dim, num_heads)
@@ -138,8 +141,7 @@ class TwoWayAttentionBlock(nn.Module):
         self.cross_attn_image_to_token = Attention(
             embedding_dim, num_heads, downsample_rate=attention_downsample_rate
         )
-        ## --------_  !!!!!! hard encode --------------#####
-        self.global_query = nn.parameter.Parameter(data=0.1 * torch.randn(1, 10, embedding_dim))
+        self.global_query = nn.parameter.Parameter(data=0.1 * torch.randn(batch_size, 10, embedding_dim))
 
     def forward(self, img_embed, point_embed, img_pe, point_pe) -> Tuple[Tensor, Tensor]:
         q = torch.cat([self.global_query, point_embed], dim=1)
@@ -272,6 +274,7 @@ class PromptEncoder(nn.Module):
         point_coord[:, :, 0] = (point_coord[:, :, 0]+0.5) * 2 / img_size[1] - 1
         point_coord[:, :, 1] = (point_coord[:, :, 1]+0.5) * 2 / img_size[0] - 1
         
+        global batch_size
         batch_size = image_embeddings.size()[0]
         point_coord = point_coord.reshape(batch_size,1,-1,2)
         image_pe = image_pe.repeat(batch_size, 1, 1, 1)

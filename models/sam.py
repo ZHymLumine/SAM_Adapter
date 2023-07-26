@@ -92,7 +92,7 @@ class PositionEmbeddingRandom(nn.Module):
 
 @register('sam')
 class SAM(nn.Module):
-    def __init__(self, inp_size=None, encoder_mode=None, loss=None):
+    def __init__(self, inp_size=None, encoder_mode=None, loss=None, config=None):
         super().__init__()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         #print('encoder_mode : ', encoder_mode)
@@ -115,6 +115,10 @@ class SAM(nn.Module):
             global_attn_indexes=encoder_mode['global_attn_indexes'],
         )
         self.prompt_embed_dim = encoder_mode['prompt_embed_dim']
+        if self.train:
+            self.batch_size = encoder_mode['train_batch_size']
+        else:
+            self.batch_size = encoder_mode['val_batch_size']
         #self.batch_size = gt_mask.size()[0]
         # self.mask_decoder = MaskDecoder(
         #     num_multimask_outputs=3,
@@ -134,7 +138,8 @@ class SAM(nn.Module):
         self.prompt_encoder = PromptEncoder(transformer=TwoWayTransformerVisualSampler(depth=2,
                                                                     embedding_dim=256,
                                                                     mlp_dim=2048,
-                                                                    num_heads=8))
+                                                                    num_heads=8,
+                                                                    batch_size=self.batch_size))
         for i in range(4):
             self.prompt_encoder.to(self.device)
             self.prompt_encoder_list.append(self.prompt_encoder)
@@ -194,20 +199,20 @@ class SAM(nn.Module):
         return self.pe_layer(self.image_embedding_size).unsqueeze(0)
 
 
-    def forward(self, x, gt_mask, num_points):
+    def forward(self, inp, gt_mask, num_points):
         bs = 1
 
-        # print("img: ", x.size())   # [1, 3, 1024, 1024]
+        # print("img: ", inp.size())   # [1, 3, 1024, 1024]
         # print('gts: ', gt_mask.size()) # [1, 1, 1024, 1024]
         # # Embed prompts
-        sparse_embeddings = torch.empty((bs, 0, self.prompt_embed_dim), device=x.device)
+        sparse_embeddings = torch.empty((bs, 0, self.prompt_embed_dim), device=inp.device)
         dense_embeddings = self.no_mask_embed.weight.reshape(1, -1, 1, 1).expand(
             bs, -1, self.image_embedding_size, self.image_embedding_size
         )
 
         # modification -------!!----------#
 
-        self.features, feature_list = self.image_encoder(x)
+        self.features, feature_list = self.image_encoder(inp)
         feature_list.append(self.features)
         feature_list = feature_list[::-1]
 
@@ -234,7 +239,7 @@ class SAM(nn.Module):
                 )
             else:
                 new_feature.append(feature)
-        img_resize = F.interpolate(x[:, 0].unsqueeze(1).to(self.device), scale_factor=self.features.shape[2]/x.shape[2],
+        img_resize = F.interpolate(inp[:, 0].unsqueeze(1).to(self.device), scale_factor=self.features.shape[2]/inp.shape[2],
                                            mode='bilinear')
         
         new_feature.append(img_resize)

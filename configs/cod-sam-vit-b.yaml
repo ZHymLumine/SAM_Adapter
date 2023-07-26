@@ -11,7 +11,7 @@ train_dataset:
     args:
       inp_size: 1024
       augment: false
-  batch_size: 1
+  batch_size: 2
 
 val_dataset:
   dataset:
@@ -90,6 +90,8 @@ model:
       - 5
       - 8
       - 11
+      train_batch_size: 2
+      val_batch_size: 2
 optimizer:
   name: adamw
   args:
@@ -104,5 +106,5 @@ multi_step_lr:
 epoch_val: 
 epoch_save: 1
 
-resume: 90
+resume: 0
 #start_epoch: 60
