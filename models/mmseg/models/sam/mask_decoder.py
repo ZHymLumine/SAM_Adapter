@@ -1,97 +1,99 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-class MLAHead(nn.Module):
-    def __init__(self, mla_channels=256, mlahead_channels=128, norm_cfg=None):
-        super(MLAHead, self).__init__()
-        self.head2 = nn.Sequential(nn.Conv2d(mla_channels, mlahead_channels, 3, padding=1, bias=False),
-                     nn.InstanceNorm2d(mlahead_channels),
-                     nn.ReLU(),
-                     nn.Conv2d(mlahead_channels, mlahead_channels, 3, padding=1, bias=False),
-                     nn.InstanceNorm2d(mlahead_channels),
-                     nn.ReLU())
-        self.head3 = nn.Sequential(nn.Conv2d(mla_channels, mlahead_channels, 3, padding=1, bias=False),
-                     nn.InstanceNorm2d(mlahead_channels),
-                     nn.ReLU(),
-                     nn.Conv2d(mlahead_channels, mlahead_channels, 3, padding=1, bias=False),
-                     nn.InstanceNorm2d(mlahead_channels),
-                     nn.ReLU())
-        self.head4 = nn.Sequential(nn.Conv2d(mla_channels, mlahead_channels, 3, padding=1, bias=False),
-                     nn.InstanceNorm2d(mlahead_channels),
-                     nn.ReLU(),
-                     nn.Conv2d(mlahead_channels, mlahead_channels, 3, padding=1, bias=False),
-                     nn.InstanceNorm2d(mlahead_channels),
-                     nn.ReLU())
-        self.head5 = nn.Sequential(nn.Conv2d(mla_channels, mlahead_channels, 3, padding=1, bias=False),
-                     nn.InstanceNorm2d(mlahead_channels),
-                     nn.ReLU(),
-                     nn.Conv2d(mlahead_channels, mlahead_channels, 3, padding=1, bias=False),
-                     nn.InstanceNorm2d(mlahead_channels),
-                     nn.ReLU())
-
-    def forward(self, mla_p2, mla_p3, mla_p4, mla_p5, scale_factor):
-        head2 = F.interpolate(self.head2(
-            mla_p2), scale_factor = scale_factor, mode='bilinear', align_corners=True)
-        head3 = F.interpolate(self.head3(
-            mla_p3), scale_factor = scale_factor, mode='bilinear', align_corners=True)
-        head4 = F.interpolate(self.head4(
-            mla_p4), scale_factor = scale_factor, mode='bilinear', align_corners=True)
-        head5 = F.interpolate(self.head5(
-            mla_p5), scale_factor = scale_factor, mode='bilinear', align_corners=True)
-        return torch.cat([head2, head3, head4, head5], dim=1)
+from functools import partial
+import math
 
 
-class VIT_MLAHead(nn.Module):
-    def __init__(self, img_size=768, mla_channels=256, mlahead_channels=128, num_classes=3,
-                 norm_layer=nn.BatchNorm2d, norm_cfg=None, **kwargs):
-        super(VIT_MLAHead, self).__init__(**kwargs)
+class VisionTransformerUpHead(nn.Module):
+    """ Vision Transformer with support for patch or hybrid CNN input stage
+    """
+
+    def __init__(self, img_size=64, embed_dim=1024, mid_channels=256,
+                 norm_cfg=None, num_conv=4, upsampling_method='bilinear', num_upsampe_layer=4, conv3x3_conv1x1=True, align_corners=False, **kwargs):
+        super(VisionTransformerUpHead, self).__init__(**kwargs)
         self.img_size = img_size
         self.norm_cfg = norm_cfg
-        self.mla_channels = mla_channels
-        self.BatchNorm = norm_layer
-        self.mlahead_channels = mlahead_channels
+        self.num_conv = num_conv
+        self.upsampling_method = upsampling_method
+        self.num_upsampe_layer = num_upsampe_layer
+        self.conv3x3_conv1x1 = conv3x3_conv1x1
+        self.align_corners = align_corners
 
-        self.mlahead = MLAHead(mla_channels=self.mla_channels,
-                               mlahead_channels=self.mlahead_channels, norm_cfg=self.norm_cfg)
-        self.cls = nn.Sequential(nn.Conv2d(4 * mlahead_channels + 1, mlahead_channels, 3, padding=1, bias=False),
-                     nn.InstanceNorm2d(mlahead_channels),
-                     nn.ReLU(),
-                     nn.Conv2d(mlahead_channels, num_classes, 3, padding=1, bias=False))
+        if self.num_conv == 2:
+            if self.conv3x3_conv1x1:
+                self.conv_0 = nn.Sequential(
+                    nn.Conv2d(embed_dim, mid_channels, kernel_size=3, stride=1, padding=1),
+                    nn.InstanceNorm2d(mid_channels)
+                    )
+            else:
+                self.conv_0 = nn.Conv2d(embed_dim, 256, 1, 1)
+            self.conv_1 = nn.Conv2d(256, 1, 1, 1)
 
-    def forward(self, inputs, scale_factor=None):
-        if scale_factor == None:
-            scale_factor = self.img_size / inputs[0].shape[-1]
-        x = self.mlahead(inputs[0], inputs[1], inputs[2], inputs[3], scale_factor = scale_factor)
-        x = torch.cat([x, inputs[-1]], dim=1)
-        x = self.cls(x)
-        return x
+        elif self.num_conv == 4:
+            self.conv_0 = nn.Sequential(nn.Conv2d(
+                embed_dim, mid_channels, kernel_size=3, stride=1, padding=1),
+                nn.InstanceNorm2d(mid_channels),
+                nn.ReLU(inplace=True))
+            self.conv_1 = nn.Sequential(nn.Conv2d(
+                mid_channels, mid_channels, kernel_size=3, stride=1, padding=1),
+                nn.InstanceNorm2d(mid_channels),
+                nn.ReLU(inplace=True))
+            self.conv_2 = nn.Sequential(nn.Conv2d(
+                mid_channels, mid_channels, kernel_size=3, stride=1, padding=1),
+                nn.InstanceNorm2d(mid_channels),
+                nn.ReLU(inplace=True))
+            self.conv_3 = nn.Sequential(nn.Conv2d(
+                mid_channels, mid_channels, kernel_size=3, stride=1, padding=1),
+                nn.InstanceNorm2d(mid_channels),
+                nn.ReLU(inplace=True))
+            self.conv_4 = nn.Sequential(nn.Conv2d(
+                mid_channels, 1, kernel_size=3, stride=1, padding=1),
+                nn.InstanceNorm2d(mid_channels))
+            
 
+        # Segmentation head
 
-class VIT_MLAHead_h(nn.Module):
-    def __init__(self, img_size=768, mla_channels=256, mlahead_channels=128, num_classes=2,
-                 norm_layer=nn.BatchNorm2d, norm_cfg=None, **kwargs):
-        super(VIT_MLAHead_h, self).__init__(**kwargs)
-        self.img_size = img_size
-        self.norm_cfg = norm_cfg
-        self.mla_channels = mla_channels
-        self.BatchNorm = norm_layer
-        self.mlahead_channels = mlahead_channels
+    def forward(self, inputs):
+        x = torch.cat([inputs[0], inputs[1], inputs[2], inputs[3]], dim=1)
 
-        self.mlahead = MLAHead(mla_channels=self.mla_channels,
-                               mlahead_channels=self.mlahead_channels, norm_cfg=self.norm_cfg)
-        
-        self.cls = nn.Sequential(nn.Conv2d(4 * mlahead_channels + 1, mlahead_channels, 3, padding=1, bias=False),
-                     nn.InstanceNorm2d(mlahead_channels),
-                     nn.ReLU(),
-                     nn.Conv2d(mlahead_channels, 1, 3, padding=1, bias=False))
+        if self.upsampling_method == 'bilinear':
+            # if x.dim() == 3:
+            #     n, hw, c = x.shape
+            #     h = w = int(math.sqrt(hw))
+            #     x = x.transpose(1, 2).reshape(n, c, h, w)
 
-    def forward(self, inputs, scale_factor1, scale_factor2):
-        x = self.mlahead(inputs[0], inputs[1], inputs[2], inputs[3], scale_factor = scale_factor1)
-        # print("x: ", x.size())    # [1, 512, 64, 64]
-        # print("inputs[-1]: ", inputs[-1].size()) # [1, 1, 64, 64]
-        x = torch.cat([x, inputs[-1]], dim=1)
-        x = self.cls(x)
-        x = F.interpolate(x, scale_factor = scale_factor2, mode='bilinear', align_corners=True)
-        #print("return from decoder size : ", x.size())
+            if self.num_conv == 2:
+                if self.num_upsampe_layer == 2:
+                    x = self.conv_0(x)
+                    x = F.interpolate(
+                        x, size=x.shape[-1]*4, mode='bilinear', align_corners=self.align_corners)
+                    x = self.conv_1(x)
+                    x = F.interpolate(
+                        x, size=self.img_size, mode='bilinear', align_corners=self.align_corners)
+                elif self.num_upsampe_layer == 1:
+                    x = self.conv_0(x)
+                    x = self.conv_1(x)
+                    x = F.interpolate(
+                        x, size=self.img_size, mode='bilinear', align_corners=self.align_corners)
+            elif self.num_conv == 4:
+                if self.num_upsampe_layer == 4:
+                    x = self.conv_0(x)
+                    x = F.interpolate(
+                        x, size=x.shape[-1]*2, mode='bilinear', align_corners=self.align_corners)
+                
+                    x = self.conv_1(x)
+                    x = F.interpolate(
+                        x, size=x.shape[-1]*2, mode='bilinear', align_corners=self.align_corners)
+
+                    x = self.conv_2(x)
+                    x = F.interpolate(
+                        x, size=x.shape[-1]*2, mode='bilinear', align_corners=self.align_corners)
+                    
+                    x = self.conv_3(x)
+
+                    x = self.conv_4(x)
+                    x = F.interpolate(
+                        x, size=x.shape[-1]*2, mode='bilinear', align_corners=self.align_corners)
+                   
         return x

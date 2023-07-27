@@ -7,8 +7,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from models import register
-from .mmseg.models.sam import ImageEncoderViT, TwoWayTransformer, PromptEncoder, TwoWayTransformerVisualSampler, VIT_MLAHead_h
+from .mmseg.models.sam import ImageEncoderViT, TwoWayTransformer, PromptEncoder, TwoWayTransformerVisualSampler, VisionTransformerUpHead
 # from .mmseg.models.sam import MaskDecoder
+#from .mmseg.models.sam import VIT_MLAHead_h
 logger = logging.getLogger(__name__)
 from .iou_loss import IOU
 from typing import Any, Optional, Tuple
@@ -92,7 +93,7 @@ class PositionEmbeddingRandom(nn.Module):
 
 @register('sam')
 class SAM(nn.Module):
-    def __init__(self, inp_size=None, encoder_mode=None, loss=None, config=None):
+    def __init__(self, inp_size=None, encoder_mode=None, loss=None):
         super().__init__()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         #print('encoder_mode : ', encoder_mode)
@@ -119,19 +120,6 @@ class SAM(nn.Module):
             self.batch_size = encoder_mode['train_batch_size']
         else:
             self.batch_size = encoder_mode['val_batch_size']
-        #self.batch_size = gt_mask.size()[0]
-        # self.mask_decoder = MaskDecoder(
-        #     num_multimask_outputs=3,
-        #     transformer=TwoWayTransformer(
-        #         depth=2,
-        #         embedding_dim=self.prompt_embed_dim,
-        #         mlp_dim=2048,
-        #         num_heads=8,
-        #     ),
-        #     transformer_dim=self.prompt_embed_dim,
-        #     iou_head_depth=3,
-        #     iou_head_hidden_dim=256,
-        # )
 
         # ------- modification start --------------
         self.prompt_encoder_list = []
@@ -146,8 +134,9 @@ class SAM(nn.Module):
         #parameter_list.extend([i for i in self.prompt_encoder.parameters() if i.requires_grad == True])
         
         #  Mask Decoder
-        
-        self.mask_decoder = VIT_MLAHead_h(img_size=64, num_classes=2)
+
+        self.mask_decoder = VisionTransformerUpHead(img_size=64,)
+
         self.mask_decoder.to(self.device)
          
         # ------- modification done --------------
@@ -183,10 +172,6 @@ class SAM(nn.Module):
         self.image_embedding_size = inp_size // encoder_mode['patch_size']
         self.no_mask_embed = nn.Embedding(1, encoder_mode['prompt_embed_dim'])
 
-    def set_input(self, input, gt_mask):
-        x = input.to(self.device)
-        gt_mask = gt_mask.to(self.device)
-
     def get_dense_pe(self) -> torch.Tensor:
         """
         Returns the positional encoding used to encode point prompts,
@@ -199,7 +184,7 @@ class SAM(nn.Module):
         return self.pe_layer(self.image_embedding_size).unsqueeze(0)
 
 
-    def forward(self, inp, gt_mask, num_points):
+    def forward(self, inp, gt_mask, num_points=40):
         bs = 1
 
         # print("img: ", inp.size())   # [1, 3, 1024, 1024]
@@ -224,13 +209,24 @@ class SAM(nn.Module):
         points_torch = None
         if l > 0:
             sample = np.random.choice(np.arange(l), num_points, replace=True)
-            x = torch.where(gt_mask == 1)[2][sample].unsqueeze(1)  # (20, 1)
-            y = torch.where(gt_mask == 1)[3][sample].unsqueeze(1)  # (20, 1)
-            points = torch.cat([x, y], dim=1).unsqueeze(1).float() # (20, 1, 2)
+            x = torch.where(gt_mask == 1)[2][sample].unsqueeze(1)  # (num_points, 1)
+            y = torch.where(gt_mask == 1)[3][sample].unsqueeze(1)  # (num_points, 1)
+            points = torch.cat([x, y], dim=1).unsqueeze(1).float() # (num_points, 1, 2)
             points_torch = points.to(self.device)
-            points_torch = points_torch.transpose(0,1).repeat(batch_size, 1, 1)    # (b, 20, 2)
-
+            points_torch = points_torch.transpose(0,1).repeat(batch_size, 1, 1)    # (b, num_points, 2)
         
+        l = len(torch.where(gt_mask < 10)[0])
+        sample = np.random.choice(np.arange(l), 10, replace=True)
+        x = torch.where(gt_mask < 10)[2][sample].unsqueeze(1)
+        y = torch.where(gt_mask < 10)[3][sample].unsqueeze(1)
+        points = torch.cat([x, y], dim=1).unsqueeze(1).float()
+        points_torch_negative = points.to(self.device)
+        points_torch_negative = points_torch_negative.transpose(0, 1).repeat(batch_size, 1, 1)
+        if points_torch is not None:
+            points_torch = points_torch
+        else:
+            points_torch = points_torch_negative
+    
         new_feature = []
         for i, (feature, prompt_encoder) in enumerate(zip(feature_list, self.prompt_encoder_list)):
             if i == 3: # 第四层feature过prompt encoder
@@ -239,10 +235,10 @@ class SAM(nn.Module):
                 )
             else:
                 new_feature.append(feature)
-        img_resize = F.interpolate(inp[:, 0].unsqueeze(1).to(self.device), scale_factor=self.features.shape[2]/inp.shape[2],
-                                           mode='bilinear')
+        # img_resize = F.interpolate(inp[:, 0].unsqueeze(1).to(self.device), scale_factor=self.features.shape[2]/inp.shape[2],
+        #                                    mode='bilinear')
         
-        new_feature.append(img_resize)
+        # new_feature.append(img_resize)
         # for feat in new_feature:
         #     print("feat size: ", feat.size())
         #     [1, 256, 64, 64])
@@ -250,8 +246,10 @@ class SAM(nn.Module):
         #     [1, 256, 64, 64]
         #     [1, 256, 64, 64]
         #     [1, 1, 64, 64]
-        low_res_masks = self.mask_decoder(new_feature, 1, 256//64)
+        # low_res_masks = self.mask_decoder(new_feature, 1, 256//64)
         
+        masks = self.mask_decoder(new_feature)
+
         # -------modification done------------#
 
         # Predict masks
@@ -264,7 +262,7 @@ class SAM(nn.Module):
         # )
         #print('los mask size: ', low_res_masks.size()) # [1, 1, 256, 256]
         # Upscale the masks to the original image resolution
-        masks = self.postprocess_masks(low_res_masks, self.inp_size, self.inp_size)
+        #masks = self.postprocess_masks(low_res_masks, self.inp_size, self.inp_size)
         return masks
 
    

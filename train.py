@@ -198,9 +198,16 @@ def main(config_, save_path, args):
     sam_checkpoint = torch.load(config['sam_checkpoint'])
     model.load_state_dict(sam_checkpoint, strict=False)
     
+    # for name, para in model.named_parameters():
+    #     if "image_encoder" in name and "prompt_generator" not in name:
+    #         para.requires_grad_(False)
+
     model_total_params = sum(p.numel() for p in model.parameters())
     model_grad_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('model_grad_params:' + str(model_grad_params), '\nmodel_total_params:' + str(model_total_params))
+    for name, v in model.named_parameters():
+        if v.requires_grad:
+            print(name)
 
     epoch_max = config['epoch_max']
     epoch_val = config.get('epoch_val')
@@ -266,7 +273,7 @@ def main(config_, save_path, args):
 
 
 def save(config, model, save_path, name):
-    print("model name = ", config['model']['name'])
+    #print("model name = ", config['model']['name'])
     if config['model']['name'] == 'segformer' or config['model']['name'] == 'setr':
         if config['model']['args']['encoder_mode']['name'] == 'evp':
             prompt_generator = model.encoder.backbone.prompt_generator.state_dict()
