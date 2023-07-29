@@ -13,7 +13,6 @@ import utils
 from statistics import mean
 import torch
 import torch.nn as nn
-import torch.distributed as dist
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -198,9 +197,9 @@ def main(config_, save_path, args):
     sam_checkpoint = torch.load(config['sam_checkpoint'])
     model.load_state_dict(sam_checkpoint, strict=False)
     
-    # for name, para in model.named_parameters():
-    #     if "image_encoder" in name and "prompt_generator" not in name:
-    #         para.requires_grad_(False)
+    for name, para in model.named_parameters():
+        if "image_encoder" in name and "prompt_generator" not in name:
+            para.requires_grad_(False)
 
     model_total_params = sum(p.numel() for p in model.parameters())
     model_grad_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
