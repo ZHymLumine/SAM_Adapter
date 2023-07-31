@@ -72,7 +72,7 @@ def eval_psnr(loader, model, data_norm=None, eval_type=None, eval_bsize=None,
             inp = batch['inp'].to(device)
             gt = batch['gt'].to(device)
 
-            model.set_input(inp, gt)    
+            
             pred = torch.sigmoid(model(inp, gt, num_points=1))
 
             result1, result2, result3, result4 = metric_fn(pred, gt)
