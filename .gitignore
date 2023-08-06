@@ -1,5 +1,12 @@
 *.pyc
+*.csv
 *.DS_Store
+mask_decoder_v1.py
+mask_decoder_v2.py
+mask_decoder_mla.py
+train_visualize.py
+
+
 
 __pycache__/
 save/

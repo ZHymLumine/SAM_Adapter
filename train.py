@@ -85,6 +85,9 @@ def eval_psnr(loader, model, eval_type=None):
     elif eval_type == 'cod':
         metric_fn = utils.calc_cod
         metric1, metric2, metric3, metric4 = 'sm', 'em', 'wfm', 'mae'
+    elif eval_type == 'dice':
+        metric_fn = utils.cal_dice_iou
+        metric1, metric2, metric3, metric4 = 'dice', 'iou', 'none', 'none'
 
     pbar = tqdm(total=len(loader), leave=False, desc='val')
 
@@ -237,38 +240,35 @@ def main(config_, save_path, args):
         optimizer_spec['sd'] = optimizer.state_dict()
 
         save(config, model, save_path, 'last')
-        if train_loss_G < best_loss:
-            best_loss = train_loss_G
-            save(config, model, save_path, 'best')
+        
+        if epoch_val is not None and epoch % epoch_val == 0:
+            
+            #torch.cuda.empty_cache()
 
-        if epoch_val is not None:
-            if epoch % epoch_val == 0:
-              #torch.cuda.empty_cache()
+            result1, result2, result3, result4, metric1, metric2, metric3, metric4 = eval_psnr(val_loader, model,
+                eval_type=config.get('eval_type'))
 
-              result1, result2, result3, result4, metric1, metric2, metric3, metric4 = eval_psnr(val_loader, model,
-                  eval_type=config.get('eval_type'))
+            log_info.append('val: {}={:.4f}'.format(metric1, result1))              
+            log_info.append('val: {}={:.4f}'.format(metric2, result2))             
+            log_info.append('val: {}={:.4f}'.format(metric3, result3))
+            log_info.append('val: {}={:.4f}'.format(metric4, result4))
 
-              log_info.append('val: {}={:.4f}'.format(metric1, result1))              
-              log_info.append('val: {}={:.4f}'.format(metric2, result2))             
-              log_info.append('val: {}={:.4f}'.format(metric3, result3))
-              log_info.append('val: {}={:.4f}'.format(metric4, result4))
+            if config['eval_type'] != 'ber':
+                if result1 > max_val_v:
+                    max_val_v = result1
+                    save(config, model, save_path, 'best')
+            else:
+                if result3 < max_val_v:
+                    max_val_v = result3
+                    save(config, model, save_path, 'best')
 
-              if config['eval_type'] != 'ber':
-                  if result1 > max_val_v:
-                      max_val_v = result1
-                      save(config, model, save_path, 'best')
-              else:
-                  if result3 < max_val_v:
-                      max_val_v = result3
-                      save(config, model, save_path, 'best')
+            t = timer.t()
+            prog = (epoch - epoch_start + 1) / (epoch_max - epoch_start + 1)
+            t_epoch = utils.time_text(t - t_epoch_start)
+            t_elapsed, t_all = utils.time_text(t), utils.time_text(t / prog)
+            log_info.append('{} {}/{}'.format(t_epoch, t_elapsed, t_all))
 
-              t = timer.t()
-              prog = (epoch - epoch_start + 1) / (epoch_max - epoch_start + 1)
-              t_epoch = utils.time_text(t - t_epoch_start)
-              t_elapsed, t_all = utils.time_text(t), utils.time_text(t / prog)
-              log_info.append('{} {}/{}'.format(t_epoch, t_elapsed, t_all))
-
-              log(', '.join(log_info))
+            log(', '.join(log_info))
 
 
 def save(config, model, save_path, name):

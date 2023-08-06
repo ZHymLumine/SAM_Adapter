@@ -206,6 +206,29 @@ def calc_fmeasure(y_pred,y_true):
 
 from sklearn.metrics import roc_auc_score,recall_score,precision_score
 import cv2
+
+
+def cal_dice_iou(y_pred, y_true):
+    batchsize = y_true.shape[0]
+    y_pred, y_true = y_pred.permute(0, 2, 3, 1).squeeze(-1), y_true.permute(0, 2, 3, 1).squeeze(-1)
+    with torch.no_grad():
+        assert y_pred.shape == y_true.shape
+        dice, iou = 0.0, 0.0
+        y_true = y_true.cpu().numpy()
+        y_pred = y_pred.cpu().numpy()
+        for i in range(batchsize):
+            true = y_true[i].flatten()
+            pred = y_pred[i].flatten()
+
+            TP, TN, FP, FN, BER, ACC = get_binary_classification_metrics(pred * 255,
+                                                                         true * 255, 125)
+            
+            dice += TP / (TP + FN + FP)
+            iou += 2*TP / (2*TP + FN + FP) 
+        
+        return dice / batchsize, iou / batchsize, np.array(0), np.array(0)
+
+
 def calc_ber(y_pred, y_true):
     batchsize = y_true.shape[0]
     y_pred, y_true = y_pred.permute(0, 2, 3, 1).squeeze(-1), y_true.permute(0, 2, 3, 1).squeeze(-1)
@@ -242,6 +265,7 @@ def cal_ber(tn, tp, fn, fp):
 
 def cal_acc(tn, tp, fn, fp):
     return (tp + tn) / (tp + tn + fp + fn)
+
 
 def _sigmoid(x):
     return 1 / (1 + np.exp(-x))
