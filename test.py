@@ -62,35 +62,36 @@ def eval_psnr(loader, model, data_norm=None, eval_type=None, eval_bsize=None,
         metric_fn = utils.cal_dice_iou
         metric1, metric2, metric3, metric4 = 'dice', 'iou', 'none', 'none'
         
-    val_metric1 = utils.Averager()
-    val_metric2 = utils.Averager()
-    val_metric3 = utils.Averager()
-    val_metric4 = utils.Averager()
+    pbar = tqdm(total=len(loader), leave=False, desc='val')
 
-    pbar = tqdm(loader, leave=False, desc='val')
 
+    pred_list = []
+    gt_list = []
+    
     with torch.no_grad():
-        for batch in pbar:
-            
+        torch.cuda.empty_cache()
+        for batch in loader:
+    
             inp = batch['inp'].to(device)
             gt = batch['gt'].to(device)
 
-            
             pred = torch.sigmoid(model(inp, gt, num_points=1))
+    
+            pred_list.append(pred)
+            gt_list.append(gt)
+            if pbar is not None:
+                pbar.update(1)
 
-            result1, result2, result3, result4 = metric_fn(pred, gt)
-            val_metric1.add(result1.item(), inp.shape[0])
-            val_metric2.add(result2.item(), inp.shape[0])
-            val_metric3.add(result3.item(), inp.shape[0])
-            val_metric4.add(result4.item(), inp.shape[0])
+        if pbar is not None:
+            pbar.close()
 
-            if verbose:
-                pbar.set_description('val {} {:.4f}'.format(metric1, val_metric1.item()))
-                pbar.set_description('val {} {:.4f}'.format(metric2, val_metric2.item()))
-                pbar.set_description('val {} {:.4f}'.format(metric3, val_metric3.item()))
-                pbar.set_description('val {} {:.4f}'.format(metric4, val_metric4.item()))
+    pred_list = torch.cat(pred_list, 1)
+    gt_list = torch.cat(gt_list, 1)
+    for threshold in range(10, 255, 10):
+        result1, result2, result3, result4 = metric_fn(pred_list, gt_list, threshold)
+        print(f'threshold: {threshold}: dice: {result1}')
 
-    return val_metric1.item(), val_metric2.item(), val_metric3.item(), val_metric4.item()
+    return result1, result2, result3, result4
 
 
 if __name__ == '__main__':

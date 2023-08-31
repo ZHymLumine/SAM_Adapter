@@ -13,6 +13,7 @@ import utils
 from statistics import mean
 import torch
 import torch.nn as nn
+import torch.distributed as dist
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -55,11 +56,32 @@ def make_data_loader(spec, tag=''):
    
     log('{} dataset: size={}'.format(tag, len(dataset)))
     for k, v in dataset[0].items():
+        if k == 'gt_name':
+            continue
         log('  {}: shape={}'.format(k, tuple(v.shape)))
 
     sampler = torch.utils.data.Sampler(dataset)
     loader = DataLoader(dataset, batch_size=spec['batch_size'],
         shuffle=True, num_workers=6, pin_memory=True)
+    return loader
+
+
+def make_data_loader_no_shuffle(spec, tag=''):
+    if spec is None:
+        return None
+
+    dataset = datasets.make(spec['dataset'])
+    dataset = datasets.make(spec['wrapper'], args={'dataset': dataset})
+   
+    log('{} dataset: size={}'.format(tag, len(dataset)))
+    for k, v in dataset[0].items():
+        if k == 'gt_name':
+            continue
+        log('  {}: shape={}'.format(k, tuple(v.shape)))
+
+    sampler = torch.utils.data.Sampler(dataset)
+    loader = DataLoader(dataset, batch_size=spec['batch_size'],
+        shuffle=False, num_workers=6, pin_memory=True)
     return loader
 
 
@@ -88,7 +110,7 @@ def eval_psnr(loader, model, eval_type=None):
     elif eval_type == 'dice':
         metric_fn = utils.cal_dice_iou
         metric1, metric2, metric3, metric4 = 'dice', 'iou', 'none', 'none'
-
+        
     pbar = tqdm(total=len(loader), leave=False, desc='val')
 
 
@@ -146,11 +168,13 @@ def train(train_loader, model, loss_mode):
         #     batch[k] = v.to(device)
         inp = batch['inp'].to(device)
         gt = batch['gt'].to(device)
-
+        
+        gt_name = batch['gt_name']
+        # print("gt: ", gt_name)
         # model.set_input(inp, gt)
         # model.optimize_parameters()
         model.optimizer.zero_grad()
-        pred = model(inp, gt, num_points=20)
+        pred = model(inp, gt, num_points=40)
         if  loss_mode == 'bce':
             criterionBCE = torch.nn.BCEWithLogitsLoss()
         elif loss_mode == 'bbce':
@@ -159,6 +183,7 @@ def train(train_loader, model, loss_mode):
             criterionBCE = torch.nn.BCEWithLogitsLoss()
 
         batch_loss = criterionBCE(pred, gt)
+        
         if loss_mode == 'iou':
             batch_loss += _iou_loss(pred, gt)
 
@@ -207,15 +232,18 @@ def main(config_, save_path, args):
     model_total_params = sum(p.numel() for p in model.parameters())
     model_grad_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('model_grad_params:' + str(model_grad_params), '\nmodel_total_params:' + str(model_total_params))
-    for name, v in model.named_parameters():
-        if v.requires_grad:
-            print(name)
+    # for name, v in model.named_parameters():
+    #     if v.requires_grad:
+    #         print(name)
 
     epoch_max = config['epoch_max']
     epoch_val = config.get('epoch_val')
     max_val_v = -1e18 if config['eval_type'] != 'ber' else 1e8
+    best_loss = 1e8
+    # best_loss = 1.1492
+    # max_val_v = 4.8238
     timer = utils.Timer()
-    best_loss = 1e9
+    
     for epoch in range(epoch_start, epoch_max + 1):
         print(f"{epoch} : ")
         t_epoch_start = timer.t()
@@ -241,34 +269,40 @@ def main(config_, save_path, args):
 
         save(config, model, save_path, 'last')
         
-        if epoch_val is not None and epoch % epoch_val == 0:
-            
-            #torch.cuda.empty_cache()
+        if train_loss_G < best_loss:
+            best_loss = train_loss_G
+            save(config, model, save_path, 'best_loss')
+        
+        if epoch_val is not None:
+            if epoch % epoch_val == 0:
+              #torch.cuda.empty_cache()
 
-            result1, result2, result3, result4, metric1, metric2, metric3, metric4 = eval_psnr(val_loader, model,
-                eval_type=config.get('eval_type'))
+              result1, result2, result3, result4, metric1, metric2, metric3, metric4 = eval_psnr(val_loader, model,
+                  eval_type=config.get('eval_type'))
 
-            log_info.append('val: {}={:.4f}'.format(metric1, result1))              
-            log_info.append('val: {}={:.4f}'.format(metric2, result2))             
-            log_info.append('val: {}={:.4f}'.format(metric3, result3))
-            log_info.append('val: {}={:.4f}'.format(metric4, result4))
+              log_info.append('val: {}={:.4f}'.format(metric1, result1))              
+              log_info.append('val: {}={:.4f}'.format(metric2, result2))             
+              log_info.append('val: {}={:.4f}'.format(metric3, result3))
+              log_info.append('val: {}={:.4f}'.format(metric4, result4))
 
-            if config['eval_type'] != 'ber':
-                if result1 > max_val_v:
-                    max_val_v = result1
-                    save(config, model, save_path, 'best')
-            else:
-                if result3 < max_val_v:
-                    max_val_v = result3
-                    save(config, model, save_path, 'best')
+              if config['eval_type'] != 'ber':
+                  if result1 > max_val_v:
+                      print(f'result1: {result1}')
+                      max_val_v = result1
+                      save(config, model, save_path, 'best')
+              else:
+                  if result3 < max_val_v:
+                      print(f'result3 : {result3}, max_v: {max_val_v}')
+                      max_val_v = result3
+                      save(config, model, save_path, 'best')
 
-            t = timer.t()
-            prog = (epoch - epoch_start + 1) / (epoch_max - epoch_start + 1)
-            t_epoch = utils.time_text(t - t_epoch_start)
-            t_elapsed, t_all = utils.time_text(t), utils.time_text(t / prog)
-            log_info.append('{} {}/{}'.format(t_epoch, t_elapsed, t_all))
+              t = timer.t()
+              prog = (epoch - epoch_start + 1) / (epoch_max - epoch_start + 1)
+              t_epoch = utils.time_text(t - t_epoch_start)
+              t_elapsed, t_all = utils.time_text(t), utils.time_text(t / prog)
+              log_info.append('{} {}/{}'.format(t_epoch, t_elapsed, t_all))
 
-            log(', '.join(log_info))
+              log(', '.join(log_info))
 
 
 def save(config, model, save_path, name):

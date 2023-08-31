@@ -1,15 +1,15 @@
 import logging
 from functools import partial
-
+import random
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from models import register
-from .mmseg.models.sam import ImageEncoderViT, TwoWayTransformer, PromptEncoder, TwoWayTransformerVisualSampler, VisionTransformerUpHead
-# from .mmseg.models.sam import MaskDecoder
-#from .mmseg.models.sam import VIT_MLAHead_h
+from .mmseg.models.sam import ImageEncoderViT, TwoWayTransformer, PromptEncoder, TwoWayTransformerVisualSampler #from .mmseg.models.sam importVisionTransformerUpHead
+#from .mmseg.models.sam import MaskDecoder
+from .mmseg.models.sam import VIT_MLAHead_h
 logger = logging.getLogger(__name__)
 from .iou_loss import IOU
 from typing import Any, Optional, Tuple
@@ -135,8 +135,21 @@ class SAM(nn.Module):
         
         #  Mask Decoder
 
-        self.mask_decoder = VisionTransformerUpHead(img_size=64,)
-
+        #self.mask_decoder = VisionTransformerUpHead(img_size=64,)
+        self.mask_decoder = VIT_MLAHead_h(img_size = 64)
+        
+        # self.mask_decoder = MaskDecoder(
+        #     num_multimask_outputs=3,
+        #     transformer=TwoWayTransformer(
+        #         depth=2,
+        #         embedding_dim=self.prompt_embed_dim,
+        #         mlp_dim=2048,
+        #         num_heads=8,
+        #     ),
+        #     transformer_dim=self.prompt_embed_dim,
+        #     iou_head_depth=3,
+        #     iou_head_hidden_dim=256,
+        # )
         self.mask_decoder.to(self.device)
          
         # ------- modification done --------------
@@ -204,6 +217,58 @@ class SAM(nn.Module):
         # print('mask size', gt_mask.size())  # (B, 1, 1024, 1024)
         # print('mask: \n', gt_mask)
         # print(torch.where(gt_mask == 1))
+        
+        # bounding box
+        
+#         y_indices, x_indices = torch.where(gt_mask == 1)[2:]
+#         no_truth = False
+#         if x_indices.numel() > 0:
+#             x_min, x_max = torch.min(x_indices), torch.max(x_indices)
+#             y_min, y_max = torch.min(y_indices), torch.max(y_indices)
+#         else:
+#             no_truth = True
+#             x_min, x_max = 0, gt_mask.size()[3]
+#             y_min, y_max = 0, gt_mask.size()[2]
+        
+#         # add perturbation to bounding box coordinates
+#         H, W = gt_mask.shape[2:]
+#         x_min = max(0, x_min - random.randint(0, 20))
+#         x_max = min(W, x_max + random.randint(0, 20))
+#         y_min = max(0, y_min - random.randint(0, 20))
+#         y_max = min(H, y_max + random.randint(0, 20))
+#         bbox = torch.tensor([x_min, y_min, x_max, y_max]).to(self.device)
+        
+#         batch_size = gt_mask.size()[0]
+#         points_torch = None       
+#         x_min, y_min, x_max, y_max = bbox   
+#         H, W = gt_mask.shape[2:]
+#         y_grid, x_grid = torch.meshgrid(torch.arange(H), torch.arange(W))
+#         y_grid, x_grid = y_grid.to(gt_mask.device), x_grid.to(gt_mask.device)
+#         negative_mask = (gt_mask == 0) & (y_grid >= y_min) & (y_grid < y_max) & (x_grid >= x_min) & (x_grid < x_max) 
+#         positive_mask = (gt_mask == 1) & (y_grid >= y_min) & (y_grid < y_max) & (x_grid >= x_min) & (x_grid < x_max)
+#         negative_points = torch.nonzero(negative_mask)
+#         positive_points = torch.nonzero(positive_mask)
+
+#         if negative_points.shape[0] > 10:
+#             negative_points = negative_points[torch.randperm(negative_points.shape[0])[:10]]
+#         negative_points = negative_points[:, 2:].unsqueeze(1).float()           # (num_points, 1, 2)
+        
+#         if positive_points.shape[0] > num_points:
+#             positive_points = positive_points[torch.randperm(positive_points.shape[0])[:num_points]]
+#         positive_points = positive_points[:, 2:].unsqueeze(1).float()           # (num_points, 1, 2)
+        
+#         if no_truth:
+#             points = negative_points
+#         elif self.training:
+#             points = torch.cat([positive_points, negative_points], dim=0)
+#         else:
+#             points = positive_points
+         
+#         shuffled_indices = torch.randperm(points.size(0))
+#         points = points[shuffled_indices]
+#         points_torch = points.to(self.device)
+#         points_torch = points_torch.transpose(0,1).repeat(batch_size, 1, 1)    # (b, num_points, 2)
+        
         l = len(torch.where(gt_mask == 1)[2])
         batch_size = gt_mask.size()[0]
         points_torch = None
@@ -246,15 +311,18 @@ class SAM(nn.Module):
         #     [1, 256, 64, 64]
         #     [1, 256, 64, 64]
         #     [1, 1, 64, 64]
-        # low_res_masks = self.mask_decoder(new_feature, 1, 256//64)
+        low_res_masks = self.mask_decoder(new_feature, 1, 256//64)
         
-        masks = self.mask_decoder(new_feature)
+        ## !!!!!!! TODO !!!!!!!!!!!######   gaussian_mask= support的mask, 把下面这行取消注释
+        #low_res_masks = self.mask_decoder(new_feature, 1, 256//64, gaussian_mask) 
+        
+        #masks = self.mask_decoder(new_feature)
 
         # -------modification done------------#
 
         # Predict masks
         # low_res_masks, iou_predictions = self.mask_decoder(
-        #     image_embeddings=self.features,
+        #     image_embeddings=new_feature[-1],
         #     image_pe=self.get_dense_pe(),
         #     sparse_prompt_embeddings=sparse_embeddings,
         #     dense_prompt_embeddings=dense_embeddings,
@@ -262,7 +330,7 @@ class SAM(nn.Module):
         # )
         #print('los mask size: ', low_res_masks.size()) # [1, 1, 256, 256]
         # Upscale the masks to the original image resolution
-        #masks = self.postprocess_masks(low_res_masks, self.inp_size, self.inp_size)
+        masks = self.postprocess_masks(low_res_masks, self.inp_size, self.inp_size)
         return masks
 
    

@@ -208,7 +208,7 @@ from sklearn.metrics import roc_auc_score,recall_score,precision_score
 import cv2
 
 
-def cal_dice_iou(y_pred, y_true):
+def cal_dice_iou(y_pred, y_true, thresh=150):
     batchsize = y_true.shape[0]
     y_pred, y_true = y_pred.permute(0, 2, 3, 1).squeeze(-1), y_true.permute(0, 2, 3, 1).squeeze(-1)
     with torch.no_grad():
@@ -223,8 +223,8 @@ def cal_dice_iou(y_pred, y_true):
             TP, TN, FP, FN, BER, ACC = get_binary_classification_metrics(pred * 255,
                                                                          true * 255, 125)
             
-            dice += TP / (TP + FN + FP)
-            iou += 2*TP / (2*TP + FN + FP) 
+            dice += 2*TP / (2*TP + FN + FP) 
+            iou += TP / (TP + FN + FP)
         
         return dice / batchsize, iou / batchsize, np.array(0), np.array(0)
 
@@ -235,6 +235,7 @@ def calc_ber(y_pred, y_true):
     with torch.no_grad():
         assert y_pred.shape == y_true.shape
         pos_err, neg_err, ber = 0, 0, 0
+        dice = 0
         y_true = y_true.cpu().numpy()
         y_pred = y_pred.cpu().numpy()
         for i in range(batchsize):
@@ -243,10 +244,14 @@ def calc_ber(y_pred, y_true):
 
             TP, TN, FP, FN, BER, ACC = get_binary_classification_metrics(pred * 255,
                                                                          true * 255, 125)
+            if TP + FN == 0:
+                TP += 1e-20
+            if TN + FP == 0:
+                TN += 1e-20
             pos_err += (1 - TP / (TP + FN)) * 100
             neg_err += (1 - TN / (TN + FP)) * 100
-
-    return pos_err / batchsize, neg_err / batchsize, (pos_err + neg_err) / 2 / batchsize, np.array(0)
+            dice += 2*TP / (2*TP + FN + FP)
+    return pos_err / batchsize, neg_err / batchsize, (pos_err + neg_err) / 2 / batchsize, dice / batchsize
 
 def get_binary_classification_metrics(pred, gt, threshold=None):
     if threshold is not None:
@@ -261,11 +266,13 @@ def get_binary_classification_metrics(pred, gt, threshold=None):
     return TP, TN, FP, FN, BER, ACC
 
 def cal_ber(tn, tp, fn, fp):
+    if fn + tp == 0:
+        print('divide by zero')
+        return 0.5*(fp/(tn+fp + 1e-20) + fn/(fn+tp + 1e-20))
     return  0.5*(fp/(tn+fp) + fn/(fn+tp))
 
 def cal_acc(tn, tp, fn, fp):
     return (tp + tn) / (tp + tn + fp + fn)
-
 
 def _sigmoid(x):
     return 1 / (1 + np.exp(-x))
